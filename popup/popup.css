@@ -1,0 +1,67 @@
+body {
+    margin: 0;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    min-width: 360px;
+}
+
+.wrap { width: 340px; padding: 12px; }
+
+.title { font-weight: 700; }
+.muted { color: #666; font-size: 12px; }
+
+.block { margin-top: 12px; padding-top: 10px; border-top: 1px solid #eee; }
+label { display: block; font-size: 12px; color: #333; margin-bottom: 6px; }
+
+select, input {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    box-sizing: border-box;
+}
+
+button {
+    padding: 8px 10px;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    cursor: pointer;
+    background: #fff;
+}
+button.primary { background: #00b45a; color: #fff; border-color: #00b45a; }
+button:disabled { opacity: .6; cursor: not-allowed; }
+
+.btns { display: flex; gap: 8px; margin-top: 8px; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.row2 { display: flex; gap: 8px; align-items: center; }
+.row2 input { flex: 1; }
+
+/* Selector list tek satır, uzatmasın */
+#selectorsList {
+    margin-top: 8px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Status: popup boyunu uzatmaz, altta yüzer */
+.status {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: 10px;
+    padding: 8px 10px;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    font-size: 12px;
+    color: #222;
+    background: #fff;
+    box-shadow: 0 6px 18px rgba(0,0,0,.08);
+}
+.status.warn { border-color: #ffcf66; color: #7a5b00; }
+input{
+    background:#0f0f0f;
+    color:#fff;
+    border:1px solid #444;
+    border-radius:10px;
+    padding:6px 8px
+}

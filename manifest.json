@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "last-exchange",
+  "version": "0.1.0",
+  "description": "Detects page currency and converts prices to EUR/USD with safe fallbacks.",
+  "permissions": ["storage", "activeTab", "tabs"],
+  "background": { "service_worker": "background/sw.js" },
+  "action": {
+    "default_title": "Currency Converter",
+    "default_popup": "popup/popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "run_at": "document_idle",
+      "js": [
+        "globals/currencyMaps.js",
+        "lib/storage.js",
+        "lib/currencyDetect.js",
+        "lib/siteRateDetect.js",
+        "lib/convert.js",
+        "content/content.js"
+      ],
+      "css": ["content/ui.css"]
+    }
+  ]
+}

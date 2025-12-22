@@ -1,0 +1,94 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+<div class="wrap">
+    <div class="row">
+        <div>
+            <div class="title">Detected</div>
+            <div class="muted" id="detected">…</div>
+        </div>
+        <button id="refresh" title="Refresh">↻</button>
+    </div>
+
+    <div class="block">
+        <label>Target</label>
+        <select id="target">
+            <option value="EUR">EUR</option>
+            <option value="USD">USD</option>
+            <option value="ORIGINAL">Original</option>
+        </select>
+        <div class="btns">
+            <button class="primary" id="convert">Convert</button>
+            <button id="revert">Revert</button>
+        </div>
+    </div>
+
+    <div class="block">
+        <label>Domain override (source currency)</label>
+        <select id="override">
+            <option value="">Auto</option>
+        </select>
+        <div class="muted" id="host">…</div>
+    </div>
+
+    <div class="block">
+        <label>Custom selector (optional)</label>
+        <input id="selector" placeholder=".price, .amount" />
+        <div class="btns">
+            <button id="addSelector">Add selector</button>
+            <!-- Scope picker (opsiyonel ama popup.js bunu arıyor) -->
+            <button id="pickerStart" type="button">Pick scope</button>
+            <button id="pickerStop" type="button">Stop</button>
+        </div>
+        <div class="muted" id="selectorsList">Saved: none</div>
+    </div>
+
+    <div class="block">
+        <label>Manual rate (if API fails)</label>
+        <div class="row2">
+            <input id="manualRate" placeholder="e.g. 0.0102" />
+            <button id="saveManual">Save</button>
+        </div>
+        <div class="muted" id="manualHint">Saved per host+pair: HOST + FROM->TARGET</div>
+    </div>
+
+    <div class="block">
+        <label>Rate widget selectors (USD/EUR)</label>
+
+        <input id="rateUsdSel" placeholder="WHERE USD (CSS selector)" />
+        <div style="height:8px"></div>
+        <input id="rateEurSel" placeholder="WHERE EUR (CSS selector)" />
+
+        <div class="btns">
+            <button id="saveRateSelectors" type="button">Save selectors</button>
+
+            <!-- Rate picker (opsiyonel ama popup.js bunu arıyor) -->
+            <button id="ratePickUsd" type="button">Pick USD</button>
+            <button id="ratePickEur" type="button">Pick EUR</button>
+            <button id="ratePickStop" type="button">Stop</button>
+        </div>
+
+        <div class="muted" id="rateSelHint">Saved: none</div>
+    </div>
+
+    <div class="block">
+        <!-- (opsiyonel) Site cache temizleme -->
+        <div class="btns">
+            <button id="clearSiteCache" type="button">Clear site cache</button>
+        </div>
+    </div>
+</div>
+
+<!-- Status bar -->
+<div id="status" class="status" style="display:none"></div>
+
+<script src="../globals/currencyMaps.js"></script>
+<script src="../lib/storage.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>
