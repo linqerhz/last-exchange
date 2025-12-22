@@ -49,6 +49,7 @@
     const elRateSelUsd = document.getElementById("rateSelUsd");
     const elRateSelEur = document.getElementById("rateSelEur");
     const btnSaveRateSelectors = document.getElementById("saveRateSelectors");
+    const elRateSelHint = document.getElementById("rateSelHint");
 
     // ✅ Rate picker buttons (opsiyonel) - popup.html'e eklersen çalışır
     // button#ratePickUsd, button#ratePickEur, button#ratePickStop
@@ -57,6 +58,11 @@
     const btnRatePickStop = document.getElementById("ratePickStop");
 
     const elStatus = document.getElementById("status");
+
+    const SITE_MIN_CONF = 0.70;
+    const SITE_MIN_SAMPLES = 3;
+    const SITE_MAX_DISP = 0.03;
+
 
     function showStatus(msg, isWarn = false) {
         if (!elStatus) return;
@@ -120,6 +126,14 @@
             });
 
         return `Site rates: ${keys.length} | ${top.join(" • ")}`;
+    }
+
+    function mapRateSource(source) {
+        if (!source) return "NONE";
+        if (source === "SITE") return "SITE_DETECTED";
+        if (source === "PINNED") return "PINNED";
+        if (source === "MANUAL_HOST" || source === "MANUAL_LEGACY") return "MANUAL_HOST";
+        return "NONE";
     }
 
     async function getRateSelectorsForHost(hostKey) {
@@ -200,6 +214,7 @@
 
         if (!tab?.id) {
             if (elDetected) elDetected.textContent = "no tab";
+            if (elRateSelHint) elRateSelHint.textContent = "Rate source: NONE (no active tab)";
             return;
         }
 
@@ -210,6 +225,37 @@
                 elDetected.textContent = d.currency
                     ? `${d.currency} (conf ${Math.round((d.confidence || 0) * 100)}% • ${d.evidence || "signal"})`
                     : "not detected";
+            }
+
+            const base =
+                d.currency ||
+                settings.domainCurrencyOverride?.[hostKey] ||
+                "";
+
+            if (elRateSelHint) {
+                if (!base) {
+                    elRateSelHint.textContent = "Rate source: NONE (base not detected; set domain override)";
+                } else {
+                    const picker = SCCStorage.pickBestRateFromSettings;
+                    const pickDirect = (from, to) => {
+                        if (!from || !to) return null;
+                        if (String(from).toUpperCase() === String(to).toUpperCase()) {
+                            return { rate: 1, source: "IDENTITY" };
+                        }
+                        return picker?.(settings, hostKey, from, to, {
+                            minConf: SITE_MIN_CONF,
+                            minSamples: SITE_MIN_SAMPLES,
+                            maxDisp: SITE_MAX_DISP
+                        }) || null;
+                    };
+
+                    const usdPick = pickDirect("USD", base);
+                    const eurPick = pickDirect("EUR", base);
+
+                    const usdSource = mapRateSource(usdPick?.source);
+                    const eurSource = mapRateSource(eurPick?.source);
+                    elRateSelHint.textContent = `Rate source: USD=${usdSource} • EUR=${eurSource}`;
+                }
             }
         } else {
             if (elDetected) elDetected.textContent = "content script not available on this page";
@@ -477,4 +523,10 @@
     }
 
     await refreshUI();
+
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== "local") return;
+        if (!changes.settings) return;
+        refreshUI();
+    });
 })();

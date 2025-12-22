@@ -291,9 +291,9 @@
         for (const k of requiredPairs) {
             const p = cachedPairs[k];
             const r = (p && typeof p === "object") ? p.rate : p;
-            if (isValidRateNumber(r)) return true; // ✅ ANY-match + valid rate
+            if (!isValidRateNumber(r)) return false;
         }
-        return false;
+        return true;
     }
 
     async function ensureSitePairsFresh(settings, host, selectors, baseCode, requiredPairs = []) {
@@ -404,6 +404,13 @@
         return String(pick.source || "UNKNOWN");
     }
 
+    function mapRateSource(source) {
+        if (!source) return "NONE";
+        if (source === "SITE") return "SITE_DETECTED";
+        return String(source);
+    }
+
+
     // ✅ refreshRatesUI requiredPairs üretir + host norm uyumlu
     async function refreshRatesUI(baseCurrency) {
         const shadow = getShadow();
@@ -445,8 +452,8 @@
         setRatesLine(base, usdPick, eurPick);
         setManualPanel(base, !usdOk, !eurOk);
 
-        const usdMsg = usdOk ? `USD ok (${usdPick.source || "?"})` : "USD not found (local)";
-        const eurMsg = eurOk ? `EUR ok (${eurPick.source || "?"})` : "EUR not found (local)";
+        const usdMsg = usdOk ? `USD ok (${mapRateSource(usdPick.source)})` : "USD not found (NONE)";
+        const eurMsg = eurOk ? `EUR ok (${mapRateSource(eurPick.source)})` : "EUR not found (NONE)";
         setStatus(`${usdMsg} / ${eurMsg}`, !(usdOk && eurOk));
 
         shadow.getElementById("saveManual").onclick = () => runAction(async () => {
@@ -482,7 +489,7 @@
     }
 
     async function resolveRate(settings, host, from, to, selectors) {
-        dbg("resolveRate: starting...", { from, to, host });
+        dbg("resolveRate: starting...", {from, to, host});
 
         const req = [pairKey(from, to), pairKey(to, from)];
         await ensureSitePairsFresh(settings, host, selectors, from, req);
@@ -499,27 +506,27 @@
 
             dbg("resolveRate:picked", {
                 host, from, to,
-                picked: picked ? { source: picked.source, rate: picked.rate, conf: picked.confidence, ev: picked.evidence } : null
+                picked: picked ? {
+                    source: picked.source,
+                    rate: picked.rate,
+                    conf: picked.confidence,
+                    ev: picked.evidence
+                } : null
             });
 
             if (picked && isValidRateNumber(picked.rate)) {
                 const rate = Number(String(picked.rate).replace(",", "."));
-                dbg("resolveRate: SUCCESS (Site/Pinned/Manual)", { rate, source: picked.source, conf: picked.confidence });
-                return { ...picked, rate };
+                dbg("resolveRate: SUCCESS (Site/Pinned/Manual)", {
+                    rate,
+                    source: picked.source,
+                    conf: picked.confidence
+                });
+                return {...picked, rate};
             }
         }
-        dbg("resolveRate: picked=null => will_call_GET_RATE", { host, from, to });
-
-        dbg("resolveRate: FALLBACK to API", { reason: "No valid picked rate (site/pinned/manual) - trying API" });
-
-        const resp = await sendMessageAsync({ type: "GET_RATE", host, from, to });
-        if (!resp?.ok) throw new Error(resp?.error || "rate error");
-
-        dbg("resolveRate: API SUCCESS", { rate: resp.rate });
-        return { rate: resp.rate, source: "API", confidence: 1.0, evidence: "api" };
+        dbg("resolveRate: picked=null => abort", {host, from, to});
+        throw new Error("Rate not available. Add a manual rate or rate selector in the popup.");
     }
-
-
     // ---------------------------
     // AUTO-RETRY: scope baskın currency
     // ---------------------------
@@ -645,11 +652,20 @@
         SCCConvert.revert();
 
         const detection = await detectCurrentWithSettings(settings);
-        const detectedFrom = detection?.currency;
-        try { setBarBase(detection); } catch { }
+        const overrideBase = settings?.domainCurrencyOverride?.[getHostKey()] || "";
+        const detectedFrom = detection?.currency || overrideBase;
+        try {
+            if (detection?.currency) {
+                setBarBase(detection);
+            } else if (overrideBase) {
+                setBarBase({ currency: overrideBase, confidence: 1.0, evidence: "override" });
+            } else {
+                setBarBase(detection);
+            }
+        } catch { }
 
         if (!detectedFrom) {
-            return { ok: false, error: "Currency not detected. Use domain override or selector." };
+            return { ok: false, error: "Base currency not detected. Set a domain override in the popup." };
         }
 
         const host = getHostKey();
@@ -717,22 +733,35 @@
         }
     }
 
-    async function maybeShowPrompt() {
-        const settings = await SCCStorage.getSettings();
-        if (!settings?.autoPrompt) return;
+        async function maybeShowPrompt() {
+            const settings = await SCCStorage.getSettings();
+            if (!settings?.autoPrompt) return;
 
-        const { detection } = await detectCurrent();
-        if (!detection?.currency) return;
+            const { detection } = await detectCurrent();
+            const overrideBase = settings?.domainCurrencyOverride?.[getHostKey()] || "";
+
+            if (!detection?.currency && !overrideBase) {
+                ensureBar();
+                setBarBase(detection);
+                setStatus("Base currency not detected. Set a domain override in the popup.", true);
+                return;
+            }
 
         ensureBar();
-        setBarBase(detection);
+            setBarBase(detection?.currency ? detection : {
+                currency: overrideBase,
+                confidence: 1.0,
+                evidence: "override"
+            });
 
         // ✅ ADIM 3: SPA footer geç render -> 1 retry warmup
         (async () => {
             try {
                 const host = getHostKey();
                 const selectors = settings?.customSelectorsByHost?.[host] || [];
-                const base = detection?.currency ? String(detection.currency).toUpperCase() : null;
+                const base = detection?.currency
+                    ? String(detection.currency).toUpperCase()
+                    : (overrideBase ? String(overrideBase).toUpperCase() : null);
                 if (!base) return;
 
                 const need = [];
@@ -1217,4 +1246,37 @@
 
     // init
     maybeShowPrompt();
-})();
+
+
+        chrome.storage.onChanged.addListener((changes, area) => {
+            if (area !== "local") return;
+            if (!changes.settings) return;
+
+            (async () => {
+                const shadow = getShadow();
+                if (!shadow) return;
+
+                const settings = await SCCStorage.getSettings();
+                const detection = await detectCurrentWithSettings(settings);
+                const overrideBase = settings?.domainCurrencyOverride?.[getHostKey()] || "";
+                const base = detection?.currency || overrideBase;
+
+                try {
+                    if (detection?.currency) {
+                        setBarBase(detection);
+                    } else if (overrideBase) {
+                        setBarBase({ currency: overrideBase, confidence: 1.0, evidence: "override" });
+                    } else {
+                        setBarBase(detection);
+                    }
+                } catch { }
+
+                if (!base) {
+                    setStatus("Base currency not detected. Set a domain override in the popup.", true);
+                    return;
+                }
+
+                try { await refreshRatesUI(base); } catch { }
+            })();
+        });
+    })();
