@@ -60,6 +60,9 @@
 
     const elStatus = document.getElementById("status");
 
+    let manualDirty = false;
+    let refreshTimer = null;
+
     const SITE_MIN_CONF = 0.70;
     const SITE_MIN_SAMPLES = 3;
     const SITE_MAX_DISP = 0.03;
@@ -234,27 +237,43 @@
         }
 
         const target = String(elTarget?.value || "EUR").trim().toUpperCase() || "EUR";
+        const manualFocused = !!(elManualRate && document.activeElement === elManualRate);
+        const skipManualOverwrite = manualFocused && manualDirty;
 
         if (base && target) {
+            const baseUp = String(base || "").trim().toUpperCase();
+
             const manualPairs = settings?.manualRatesByHost?.[hostKey]?.pairs || {};
-            const key = `${base}->${target}`;
-            const entry = manualPairs[key];
-            const rate = typeof entry === "object" ? entry.rate : entry;
-            if (Number.isFinite(Number(rate)) && Number(rate) > 0) {
-                const x = 1 / Number(rate);
-                if (elManualRate) elManualRate.value = formatManualValue(x);
+            const directKey = `${target}->${baseUp}`;
+            const inverseKey = `${baseUp}->${target}`;
+            const directEntry = manualPairs[directKey];
+            const inverseEntry = manualPairs[inverseKey];
+            const directRate = typeof directEntry === "object" ? directEntry.rate : directEntry;
+            const inverseRate = typeof inverseEntry === "object" ? inverseEntry.rate : inverseEntry;
+
+            let display = null;
+            if (Number.isFinite(Number(directRate)) && Number(directRate) > 0) {
+                display = Number(directRate);
+            } else if (Number.isFinite(Number(inverseRate)) && Number(inverseRate) > 0) {
+                display = 1 / Number(inverseRate);
+            }
+
+            if (display != null) {
+                if (elManualRate && !skipManualOverwrite) elManualRate.value = formatManualValue(display);
+
                 if (elManualHint) {
-                    elManualHint.textContent = `Current manual: 1 ${target} = ${formatManualValue(x)} ${base}`;
+                    elManualHint.textContent = `Current manual: 1 ${target} = ${formatManualValue(display)} ${baseUp}`;
+                } else {
+                    if (elManualRate && !skipManualOverwrite) elManualRate.value = "";
+
+                    if (elManualHint) {
+                        elManualHint.textContent = "Enter: 1 TARGET = X BASE (saved per host)";
+                    }
                 }
-            } else if (elManualRate) {
-                elManualRate.value = "";
-                if (elManualHint) {
-                    elManualHint.textContent = "Enter: 1 TARGET = X BASE (saved per host)";
-                }
+            } else if (elManualHint) {
+                elManualHint.textContent = "Enter: 1 TARGET = X BASE (saved per host)";
             }
         }
-
-
         if (!tab?.id) {
             if (elDetected) elDetected.textContent = "no tab";
             if (elRateSelHint) elRateSelHint.textContent = "Rate source: NONE (no active tab)";
@@ -427,17 +446,27 @@
                     return;
                 }
                 const target = String(elTarget?.value || "EUR").trim().toUpperCase() || "EUR";
-                const rate = v > 0 ? (1 / v) : null;
-                const key = `${base}->${target}`;
+                const baseUp = String(base || "").trim().toUpperCase();
+                const displayRate = v > 0 ? v : null;
+                const directKey = `${target}->${baseUp}`;
+                const inverseKey = `${baseUp}->${target}`;
 
-                if (!rate || !Number.isFinite(rate) || rate <= 0) {
+
+                if (!displayRate || !Number.isFinite(displayRate) || displayRate <= 0) {
+
                     showStatus("Enter a valid number.", true);
                     return;
                 }
 
+                const patch = {
+                    [directKey]: displayRate,
+                    [inverseKey]: 1 / displayRate
+                };
+                await SCCStorage.setManualRatesForHost(hostKey, patch);
+                manualDirty = false;
+                if (elManualRate) elManualRate.value = formatManualValue(displayRate)
 
-                await SCCStorage.setManualRatesForHost(hostKey, { [key]: rate });
-                if (elManualRate) elManualRate.value = "";
+
                 showStatus("Saved manual rate.");
                 await refreshUI();
             } finally {
@@ -571,10 +600,20 @@
     }
 
     await refreshUI();
+        if (elManualRate) {
+            elManualRate.addEventListener("input", () => {
+                manualDirty = true;
+            });
+        }
 
     chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== "local") return;
         if (!changes.settings) return;
         refreshUI();
+        if (refreshTimer) clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(() => {
+            refreshTimer = null;
+            refreshUI();
+        }, 200);
     });
 })();

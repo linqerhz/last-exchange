@@ -495,6 +495,25 @@
         const usdPick = pickDirect("USD", base);
         const eurPick = pickDirect("EUR", base);
 
+        if (base) {
+            const usdInverted = typeof usdPick?.evidence === "string" && usdPick.evidence.includes("+inv");
+            const eurInverted = typeof eurPick?.evidence === "string" && eurPick.evidence.includes("+inv");
+            dbg("refreshRatesUI:pick", {
+                pair: `USD->${base}`,
+                usedKey: usdInverted ? pairKey(base, "USD") : pairKey("USD", base),
+                source: usdPick?.source || null,
+                rate: usdPick?.rate,
+                inverted: usdInverted
+            });
+            dbg("refreshRatesUI:pick", {
+                pair: `EUR->${base}`,
+                usedKey: eurInverted ? pairKey(base, "EUR") : pairKey("EUR", base),
+                source: eurPick?.source || null,
+                rate: eurPick?.rate,
+                inverted: eurInverted
+            });
+        }
+
         const usdOk = !!(usdPick && isValidRateNumber(usdPick.rate));
         const eurOk = !!(eurPick && isValidRateNumber(eurPick.rate));
 
@@ -522,8 +541,14 @@
             const eurVal = parseUserNumber(inEur?.value);
 
             const patch = {};
-            if (baseUp !== "USD" && usdVal && usdVal > 0) patch[`USD->${baseUp}`] = usdVal;
-            if (baseUp !== "EUR" && eurVal && eurVal > 0) patch[`EUR->${baseUp}`] = eurVal;
+            if (baseUp !== "USD" && usdVal && usdVal > 0) {
+                patch[`USD->${baseUp}`] = usdVal;
+                patch[`${baseUp}->USD`] = 1 / usdVal;
+            }
+            if (baseUp !== "EUR" && eurVal && eurVal > 0) {
+                patch[`EUR->${baseUp}`] = eurVal;
+                patch[`${baseUp}->EUR`] = 1 / eurVal;
+            }
 
             if (!Object.keys(patch).length) {
                 setStatus("Nothing to save (enter a valid number).", true);
