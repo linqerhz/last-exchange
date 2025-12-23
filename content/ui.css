@@ -1,1 +1,3 @@
-/* içerik script UI shadow DOM içinde; burada zorunlu bir şey yok */
+#scc-bar-host {
+    display: block;
+}

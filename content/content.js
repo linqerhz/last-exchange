@@ -48,39 +48,8 @@
     }
 
     function parseUserNumber(raw) {
-        if (raw == null) return null;
-
-        let s = String(raw).replace(/\u00A0/g, " ").trim();
-        s = s.replace(/[^\d.,\s-]/g, "");
-        s = s.replace(/\s+/g, "");
-        if (!s) return null;
-
-        const hasDot = s.includes(".");
-        const hasComma = s.includes(",");
-
-        if (hasDot && hasComma) {
-            const lastDot = s.lastIndexOf(".");
-            const lastComma = s.lastIndexOf(",");
-            const decSep = lastDot > lastComma ? "." : ",";
-            const thouSep = decSep === "." ? "," : ".";
-            s = s.split(thouSep).join("");
-            s = s.replace(decSep, ".");
-        } else if (hasDot || hasComma) {
-            const sep = hasComma ? "," : ".";
-            const last = s.lastIndexOf(sep);
-            const fracLen = s.length - last - 1;
-
-            if (fracLen === 1 || fracLen === 2) {
-                s = s.split(sep === "," ? "." : ",").join("");
-                s = s.replace(sep, ".");
-            } else {
-                s = s.split(sep).join("");
-            }
-        }
-
-        const n = Number(s);
-        if (!Number.isFinite(n) || n <= 0 || n > 1e10) return null;
-        return n;
+        const parser = globalThis.SCCNumber?.parseNumberSmart;
+        return typeof parser === "function" ? parser(raw) : null;
     }
 
     function fmtRateNumber(n) {
@@ -117,7 +86,8 @@
         .bar{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
              background:#111; color:#fff; border-bottom:1px solid #333;
              padding:10px 12px; display:flex; align-items:center; gap:10px;}
-        .muted{color:#aaa; font-size:12px}
+        .muted{color:#aaa; font-size:12px; display:block; line-height:1.2;
+               white-space:normal; word-break:break-word; margin-top:4px}
         .muted.warn{color:#ffcf66;}
         .muted.ok{color:#a8ffcc;}
         .manual{margin-top:6px; display:none; gap:6px; align-items:center; flex-wrap:wrap}
@@ -164,27 +134,18 @@
         return host?.shadowRoot || null;
     }
 
-    function setBarBase(detection) {
-        const shadow = getShadow();
-        if (!shadow) return;
+    let LAST_STATUS_TEXT = "";
+    let LAST_STATUS_AT = 0;
+    let STATUS_TIMER = null;
+    let STATUS_PENDING = null;
+    let STATUS_STICKY = false;
 
-        const currency = detection?.currency || "";
-        const confidence = typeof detection?.confidence === "number" ? detection.confidence : 0;
-        const evidence = detection?.evidence || detection?.reason || "";
+    let LAST_BASE_KEY = "";
+    let LAST_BASE_AT = 0;
+    let BASE_TIMER = null;
+    let BASE_PENDING = null;
 
-        shadow.getElementById("title").textContent =
-            currency ? `Base: ${currency}` : "Currency not detected";
-
-        const sub = shadow.getElementById("sub");
-        sub.classList.remove("warn");
-        sub.classList.remove("ok");
-        sub.textContent =
-            currency
-                ? `confidence=${Math.round(confidence * 100)}% • ${evidence || "signal"}`
-                : "No reliable signal found";
-    }
-
-    function setStatus(text, isWarn = false) {
+    function applyStatus(text, isWarn) {
         const shadow = getShadow();
         if (!shadow) return;
         const el = shadow.getElementById("sub");
@@ -193,6 +154,84 @@
         el.classList.toggle("ok", !isWarn);
     }
 
+    function setStatus(text, isWarn = false, opts = {}) {
+        if (typeof text !== "string") text = String(text || "");
+        if (opts && typeof opts.sticky === "boolean") STATUS_STICKY = opts.sticky;
+
+        if (text === LAST_STATUS_TEXT) return;
+
+        const now = Date.now();
+        if (now - LAST_STATUS_AT < 300) {
+            STATUS_PENDING = { text, isWarn };
+            if (!STATUS_TIMER) {
+                STATUS_TIMER = setTimeout(() => {
+                    const p = STATUS_PENDING;
+                    STATUS_PENDING = null;
+                    STATUS_TIMER = null;
+                    if (!p) return;
+                    LAST_STATUS_TEXT = p.text;
+                    LAST_STATUS_AT = Date.now();
+                    applyStatus(p.text, p.isWarn);
+                }, 300);
+            }
+            return;
+        }
+
+        LAST_STATUS_TEXT = text;
+        LAST_STATUS_AT = now;
+        applyStatus(text, isWarn);
+    }
+
+    function applyBaseText(titleText, subText) {
+        const shadow = getShadow();
+        if (!shadow) return;
+        shadow.getElementById("title").textContent = titleText;
+        if (!STATUS_STICKY && subText != null) {
+            const sub = shadow.getElementById("sub");
+            sub.classList.remove("warn");
+            sub.classList.remove("ok");
+            sub.textContent = subText;
+        }
+    }
+
+    function setBarBase(detection) {
+        const shadow = getShadow();
+        if (!shadow) return;
+
+
+        const currency = detection?.currency || "";
+        const confidence = typeof detection?.confidence === "number" ? detection.confidence : 0;
+        const evidence = detection?.evidence || detection?.reason || "";
+
+        const titleText = currency ? `Base: ${currency}` : "Currency not detected";
+        const subText = currency
+            ? `confidence=${Math.round(confidence * 100)}% • ${evidence || "signal"}`
+            : "No reliable signal found";
+
+        const key = `${titleText}::${subText}`;
+        if (key === LAST_BASE_KEY) return;
+
+        const now = Date.now();
+        if (now - LAST_BASE_AT < 250) {
+            BASE_PENDING = { titleText, subText };
+            if (!BASE_TIMER) {
+                BASE_TIMER = setTimeout(() => {
+                    const p = BASE_PENDING;
+                    BASE_PENDING = null;
+                    BASE_TIMER = null;
+                    if (!p) return;
+                    LAST_BASE_KEY = `${p.titleText}::${p.subText}`;
+                    LAST_BASE_AT = Date.now();
+                    applyBaseText(p.titleText, p.subText);
+                }, 250);
+            }
+            return;
+        }
+
+        LAST_BASE_KEY = key;
+        LAST_BASE_AT = now;
+        applyBaseText(titleText, subText);
+    }
     function setBusy(isBusy, message) {
         const shadow = getShadow();
         if (!shadow) return;
@@ -296,14 +335,18 @@
         return true;
     }
 
-    async function ensureSitePairsFresh(settings, host, selectors, baseCode, requiredPairs = []) {
+    async function ensureSitePairsFresh(settings, host, selectors, baseCode, requiredPairs = [], opts = {}) {
         const rs = settings?.rateSelectorsByHost?.[host];
+        const forceDetect = !!opts.forceDetect;
+        const reason = opts?.reason || "unknown";
         dbg("ensureSitePairsFresh:start", {
             host,
             baseCode: baseCode || null,
             requiredPairsCount: Array.isArray(requiredPairs) ? requiredPairs.length : 0,
             selectorsCount: Array.isArray(selectors) ? selectors.length : 0,
             rateSelectors: rs ? Object.keys(rs) : [], // ✅ kanıt
+            forceDetect,
+            reason
         });
 
         // settings içindeki raw entry (diagnostic için)
@@ -311,11 +354,11 @@
 
         let cachedPairs = null;
         try {
-            // TTL uygulanmış pairs döner (storage.js)
+            // TTL uygulanmış pairs döner (storage.js); stale ise null -> detect akışına düşer.
             cachedPairs = await SCCStorage.getSitePairsForHost(host, false);
             cachedPairs = normalizePairsMap(cachedPairs);
 
-            if (cachedPairs && cacheHasRequiredPairs(cachedPairs, requiredPairs)) {
+            if (!forceDetect && cachedPairs && cacheHasRequiredPairs(cachedPairs, requiredPairs)) {
                 dbg("ensureSitePairsFresh:cache_hit_required_valid", {
                     keys: Object.keys(cachedPairs).slice(0, 10),
                 });
@@ -407,12 +450,13 @@
     function mapRateSource(source) {
         if (!source) return "NONE";
         if (source === "SITE") return "SITE_DETECTED";
-        return String(source);
+        if (source === "PINNED") return "PINNED";
+        if (source === "MANUAL_HOST" || source === "MANUAL_LEGACY") return "MANUAL_HOST";
+        return "NONE";
     }
 
-
     // ✅ refreshRatesUI requiredPairs üretir + host norm uyumlu
-    async function refreshRatesUI(baseCurrency) {
+    async function refreshRatesUI(baseCurrency, opts = {}) {
         const shadow = getShadow();
         if (!shadow) return;
 
@@ -420,12 +464,18 @@
         const host = getHostKey();
         const settings = await SCCStorage.getSettings();
         const selectors = settings?.customSelectorsByHost?.[host] || [];
+        const reason = opts?.reason || "unknown";
+
+        dbg("refreshRatesUI", { host, base: base || null, reason });
 
         const need = [];
         if (base && base !== "USD") need.push(pairKey("USD", base), pairKey(base, "USD"));
         if (base && base !== "EUR") need.push(pairKey("EUR", base), pairKey(base, "EUR"));
 
-        await ensureSitePairsFresh(settings, host, selectors, base || null, need);
+        await ensureSitePairsFresh(settings, host, selectors, base || null, need, {
+            forceDetect: !!opts.forceDetect,
+            reason
+        });
         const freshSettings = await SCCStorage.getSettings();
 
         const picker = SCCStorage.pickBestRateFromSettings;
@@ -452,9 +502,15 @@
         setRatesLine(base, usdPick, eurPick);
         setManualPanel(base, !usdOk, !eurOk);
 
+        dbg("refreshRatesUI:source", {
+            host,
+            usd: usdPick ? { source: mapRateSource(usdPick.source), rate: usdPick.rate } : null,
+            eur: eurPick ? { source: mapRateSource(eurPick.source), rate: eurPick.rate } : null
+        });
+
         const usdMsg = usdOk ? `USD ok (${mapRateSource(usdPick.source)})` : "USD not found (NONE)";
         const eurMsg = eurOk ? `EUR ok (${mapRateSource(eurPick.source)})` : "EUR not found (NONE)";
-        setStatus(`${usdMsg} / ${eurMsg}`, !(usdOk && eurOk));
+        setStatus(`${usdMsg} / ${eurMsg}`, !(usdOk && eurOk), { sticky: !(usdOk && eurOk) });
 
         shadow.getElementById("saveManual").onclick = () => runAction(async () => {
             const baseUp = String(base || "").toUpperCase();
@@ -489,10 +545,13 @@
     }
 
     async function resolveRate(settings, host, from, to, selectors) {
-        dbg("resolveRate: starting...", {from, to, host});
+        dbg("resolveRate: starting...", { from, to, host });
 
-        const req = [pairKey(from, to), pairKey(to, from)];
-        await ensureSitePairsFresh(settings, host, selectors, from, req);
+        const reqPair = pairKey(from, to);
+        dbg("resolveRate: pair_request", { host, pair: reqPair });
+
+        const req = [pairKey(from, to), pairKey(to, from)]
+        await ensureSitePairsFresh(settings, host, selectors, from, req, { reason: "resolveRate" });
 
         const freshSettings = await SCCStorage.getSettings();
 
@@ -506,26 +565,25 @@
 
             dbg("resolveRate:picked", {
                 host, from, to,
-                picked: picked ? {
-                    source: picked.source,
-                    rate: picked.rate,
-                    conf: picked.confidence,
-                    ev: picked.evidence
-                } : null
+                picked: picked ? { source: picked.source, rate: picked.rate, conf: picked.confidence, ev: picked.evidence } : null
             });
 
             if (picked && isValidRateNumber(picked.rate)) {
                 const rate = Number(String(picked.rate).replace(",", "."));
+                const inverted = typeof picked.evidence === "string" && picked.evidence.includes("+inv");
                 dbg("resolveRate: SUCCESS (Site/Pinned/Manual)", {
                     rate,
                     source: picked.source,
-                    conf: picked.confidence
+                    conf: picked.confidence,
+                    evidence: picked.evidence,
+                    pair: reqPair,
+                    inverted
                 });
                 return {...picked, rate};
             }
         }
-        dbg("resolveRate: picked=null => abort", {host, from, to});
-        throw new Error("Rate not available. Add a manual rate or rate selector in the popup.");
+        dbg("resolveRate: picked=null => abort", { host, from, to });
+        throw new Error("Rate not available. Set domain override, add rate selectors, or save a manual rate.");
     }
     // ---------------------------
     // AUTO-RETRY: scope baskın currency
@@ -654,6 +712,12 @@
         const detection = await detectCurrentWithSettings(settings);
         const overrideBase = settings?.domainCurrencyOverride?.[getHostKey()] || "";
         const detectedFrom = detection?.currency || overrideBase;
+        dbg("convertTo: base_target", {
+            host: getHostKey(),
+            base: detectedFrom || null,
+            overrideBase: overrideBase || null,
+            target: targetCurrency
+        });
         try {
             if (detection?.currency) {
                 setBarBase(detection);
@@ -665,6 +729,19 @@
         } catch { }
 
         if (!detectedFrom) {
+            const host = getHostKey();
+            const rs = settings?.rateSelectorsByHost?.[host] || null;
+            const hasRateSelectors = !!(rs && (rs.USD || rs.EUR));
+            const hasManualRates = !!(settings?.manualRatesByHost?.[host]?.pairs &&
+                Object.keys(settings.manualRatesByHost[host].pairs || {}).length);
+
+            if (!hasRateSelectors && !hasManualRates) {
+                return {
+                    ok: false,
+                    error: "Rate not available. Set domain override, add rate selectors, or save a manual rate."
+                };
+            }
+
             return { ok: false, error: "Base currency not detected. Set a domain override in the popup." };
         }
 
@@ -747,7 +824,7 @@
                 return;
             }
 
-        ensureBar();
+            ensureBar();
             setBarBase(detection?.currency ? detection : {
                 currency: overrideBase,
                 confidence: 1.0,
@@ -769,15 +846,20 @@
                 if (base !== "EUR") need.push(pairKey("EUR", base), pairKey(base, "EUR"));
 
                 dbg("[ratesWarmup] pass=1", { host, base, needCount: need.length });
-                await ensureSitePairsFresh(settings, host, selectors, base, need);
-                try { await refreshRatesUI(base); } catch { }
+                await ensureSitePairsFresh(settings, host, selectors, base, need, {
+                    forceDetect: true,
+                    reason: "warmup-pass1"
+                });
+                try { await refreshRatesUI(base, { reason: "warmup-pass1" }); } catch { }
 
                 setTimeout(async () => {
                     try {
                         const s2 = await SCCStorage.getSettings();
                         dbg("[ratesWarmup] pass=2", { host, base, needCount: need.length });
-                        await ensureSitePairsFresh(s2, host, selectors, base, need);
-                        try { await refreshRatesUI(base); } catch { }
+                        await ensureSitePairsFresh(s2, host, selectors, base, need, {
+                            forceDetect: true,
+                            reason: "warmup-pass2"
+                        });
                     } catch (e2) {
                         dbg("[ratesWarmup] pass=2 error", String(e2?.message || e2));
                     }
@@ -1248,35 +1330,98 @@
     maybeShowPrompt();
 
 
-        chrome.storage.onChanged.addListener((changes, area) => {
-            if (area !== "local") return;
-            if (!changes.settings) return;
+    function relevantSettingsChanged(oldSettings, newSettings, host) {
+        const pick = (s) => ({
+            domainOverride: s?.domainCurrencyOverride?.[host],
+            selectors: s?.customSelectorsByHost?.[host],
+            rateSelectors: s?.rateSelectorsByHost?.[host],
+            manualRates: s?.manualRatesByHost?.[host],
+            pinnedRates: s?.pinnedRatesByHost?.[host],
+            siteRates: s?.siteRatesByHost?.[host],
+            autoPrompt: s?.autoPrompt
+        });
 
-            (async () => {
-                const shadow = getShadow();
-                if (!shadow) return;
+        try {
+            return JSON.stringify(pick(oldSettings)) !== JSON.stringify(pick(newSettings));
+        } catch {
+            return true;
+        }
+    }
 
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== "local") return;
+        if (!changes.settings) return;
+
+        const host = getHostKey();
+        const oldSettings = changes.settings.oldValue || {};
+        const newSettings = changes.settings.newValue || {};
+        if (!relevantSettingsChanged(oldSettings, newSettings, host)) return;
+
+        (async () => {
+            const shadow = getShadow();
+            if (!shadow) return;
+
+            const settings = await SCCStorage.getSettings();
+            const detection = await detectCurrentWithSettings(settings);
+            const overrideBase = settings?.domainCurrencyOverride?.[host] || "";
+            const base = detection?.currency || overrideBase;
+
+            try {
+                if (detection?.currency) {
+                    setBarBase(detection);
+                } else if (overrideBase) {
+                    setBarBase({ currency: overrideBase, confidence: 1.0, evidence: "override" });
+                } else {
+                    setBarBase(detection);
+                }
+            } catch { }
+
+            if (!base) {
+                setStatus("Base currency not detected. Set a domain override in the popup.", true);
+                return;
+            }
+
+            try { await refreshRatesUI(base, { reason: "onChanged" }); } catch { }
+        })();
+    });
+
+    // SPA/navigation: refresh rates at least once per navigation
+    (function setupNavListener() {
+        let lastUrl = location.href;
+        let navTimer = null;
+
+        function onNav(reason) {
+            if (location.href === lastUrl) return;
+            lastUrl = location.href;
+
+            if (navTimer) clearTimeout(navTimer);
+            navTimer = setTimeout(async () => {
                 const settings = await SCCStorage.getSettings();
                 const detection = await detectCurrentWithSettings(settings);
                 const overrideBase = settings?.domainCurrencyOverride?.[getHostKey()] || "";
                 const base = detection?.currency || overrideBase;
 
-                try {
-                    if (detection?.currency) {
-                        setBarBase(detection);
-                    } else if (overrideBase) {
-                        setBarBase({ currency: overrideBase, confidence: 1.0, evidence: "override" });
-                    } else {
-                        setBarBase(detection);
-                    }
-                } catch { }
-
-                if (!base) {
-                    setStatus("Base currency not detected. Set a domain override in the popup.", true);
-                    return;
+                if (base) {
+                    await refreshRatesUI(base, { reason: `nav:${reason}`, forceDetect: true });
                 }
+            }, 120);
+        }
 
-                try { await refreshRatesUI(base); } catch { }
-            })();
-        });
+        const pushState = history.pushState;
+        history.pushState = function (...args) {
+            const ret = pushState.apply(this, args);
+            onNav("pushState");
+            return ret;
+        };
+
+        const replaceState = history.replaceState;
+        history.replaceState = function (...args) {
+            const ret = replaceState.apply(this, args);
+            onNav("replaceState");
+            return ret;
+        };
+
+        window.addEventListener("popstate", () => onNav("popstate"));
+        window.addEventListener("hashchange", () => onNav("hashchange"));
     })();
+})();

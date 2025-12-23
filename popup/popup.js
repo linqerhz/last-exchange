@@ -30,6 +30,7 @@
     const elSelector = document.getElementById("selector");
     const elSelectorsList = document.getElementById("selectorsList");
     const elManualRate = document.getElementById("manualRate");
+    const elManualHint = document.getElementById("manualHint");
 
     const btnRefresh = document.getElementById("refresh");
     const btnConvert = document.getElementById("convert");
@@ -128,6 +129,16 @@
         return `Site rates: ${keys.length} | ${top.join(" • ")}`;
     }
 
+    function formatManualValue(x) {
+        if (!Number.isFinite(Number(x))) return "";
+        const v = Number(x);
+        if (v === 0) return "0";
+        if (v >= 1000) return v.toFixed(2);
+        if (v >= 10) return v.toFixed(3);
+        if (v >= 1) return v.toFixed(4);
+        return v.toFixed(6);
+    }
+
     function mapRateSource(source) {
         if (!source) return "NONE";
         if (source === "SITE") return "SITE_DETECTED";
@@ -135,6 +146,7 @@
         if (source === "MANUAL_HOST" || source === "MANUAL_LEGACY") return "MANUAL_HOST";
         return "NONE";
     }
+
 
     async function getRateSelectorsForHost(hostKey) {
         const h = hostKeyFromHost(hostKey);
@@ -212,53 +224,82 @@
             if (elRateSelEur) elRateSelEur.value = rs?.EUR || "";
         }
 
+        let base = settings?.domainCurrencyOverride?.[hostKey] || "";
+
+        if (!base && tab?.id) {
+            const resp = await sendTabMessage(tab.id, { type: "DETECT" });
+            if (resp?.ok) {
+                base = resp?.detection?.currency || "";
+            }
+        }
+
+        const target = String(elTarget?.value || "EUR").trim().toUpperCase() || "EUR";
+
+        if (base && target) {
+            const manualPairs = settings?.manualRatesByHost?.[hostKey]?.pairs || {};
+            const key = `${base}->${target}`;
+            const entry = manualPairs[key];
+            const rate = typeof entry === "object" ? entry.rate : entry;
+            if (Number.isFinite(Number(rate)) && Number(rate) > 0) {
+                const x = 1 / Number(rate);
+                if (elManualRate) elManualRate.value = formatManualValue(x);
+                if (elManualHint) {
+                    elManualHint.textContent = `Current manual: 1 ${target} = ${formatManualValue(x)} ${base}`;
+                }
+            } else if (elManualRate) {
+                elManualRate.value = "";
+                if (elManualHint) {
+                    elManualHint.textContent = "Enter: 1 TARGET = X BASE (saved per host)";
+                }
+            }
+        }
+
+
         if (!tab?.id) {
             if (elDetected) elDetected.textContent = "no tab";
             if (elRateSelHint) elRateSelHint.textContent = "Rate source: NONE (no active tab)";
             return;
         }
 
-        const resp = await sendTabMessage(tab.id, { type: "DETECT" });
-        if (resp?.ok) {
-            const d = resp.detection || {};
+        const resp2 = await sendTabMessage(tab.id, { type: "DETECT" });
+        if (resp2?.ok) {
+            const d = resp2.detection || {};
             if (elDetected) {
                 elDetected.textContent = d.currency
                     ? `${d.currency} (conf ${Math.round((d.confidence || 0) * 100)}% • ${d.evidence || "signal"})`
                     : "not detected";
             }
 
-            const base =
-                d.currency ||
-                settings.domainCurrencyOverride?.[hostKey] ||
-                "";
-
-            if (elRateSelHint) {
-                if (!base) {
-                    elRateSelHint.textContent = "Rate source: NONE (base not detected; set domain override)";
-                } else {
-                    const picker = SCCStorage.pickBestRateFromSettings;
-                    const pickDirect = (from, to) => {
-                        if (!from || !to) return null;
-                        if (String(from).toUpperCase() === String(to).toUpperCase()) {
-                            return { rate: 1, source: "IDENTITY" };
-                        }
-                        return picker?.(settings, hostKey, from, to, {
-                            minConf: SITE_MIN_CONF,
-                            minSamples: SITE_MIN_SAMPLES,
-                            maxDisp: SITE_MAX_DISP
-                        }) || null;
-                    };
-
-                    const usdPick = pickDirect("USD", base);
-                    const eurPick = pickDirect("EUR", base);
-
-                    const usdSource = mapRateSource(usdPick?.source);
-                    const eurSource = mapRateSource(eurPick?.source);
-                    elRateSelHint.textContent = `Rate source: USD=${usdSource} • EUR=${eurSource}`;
-                }
-            }
         } else {
             if (elDetected) elDetected.textContent = "content script not available on this page";
+            if (elRateSelHint) elRateSelHint.textContent = "Rate source: NONE (content script unavailable)";
+        }
+
+        const baseForHint = base || "";
+        if (elRateSelHint) {
+            if (!baseForHint) {
+                elRateSelHint.textContent = "Rate source: NONE (base not detected; set domain override)";
+            } else {
+                const picker = SCCStorage.pickBestRateFromSettings;
+                const pickDirect = (from, to) => {
+                    if (!from || !to) return null;
+                    if (String(from).toUpperCase() === String(to).toUpperCase()) {
+                        return { rate: 1, source: "IDENTITY" };
+                    }
+                    return picker?.(settings, hostKey, from, to, {
+                        minConf: SITE_MIN_CONF,
+                        minSamples: SITE_MIN_SAMPLES,
+                        maxDisp: SITE_MAX_DISP
+                    }) || null;
+                };
+
+                const usdPick = pickDirect("USD", baseForHint);
+                const eurPick = pickDirect("EUR", baseForHint);
+
+                const usdSource = mapRateSource(usdPick?.source);
+                const eurSource = mapRateSource(eurPick?.source);
+                elRateSelHint.textContent = `Rate source: USD=${usdSource} • EUR=${eurSource}`;
+            }
         }
     }
 
@@ -364,33 +405,40 @@
 
     if (btnSaveManual) {
         btnSaveManual.onclick = async () => {
-            const v = Number(String(elManualRate?.value || "").trim());
-            if (!isFinite(v) || v <= 0) {
-                showStatus("Invalid rate.", true);
+            const parser = globalThis.SCCNumber?.parseNumberSmart;
+            const v = typeof parser === "function" ? parser(elManualRate?.value) : null;
+            if (v == null) {
+                showStatus("Enter a valid number.", true);
                 return;
             }
 
-            if (!tab?.id) return;
-
             setBusy(true);
             try {
-                const det = await sendTabMessage(tab.id, { type: "DETECT" });
-                const from = det?.detection?.currency;
-                const to = (elTarget?.value || "EUR").trim() || "EUR";
+                const settings = await SCCStorage.getSettings();
+                let base = settings?.domainCurrencyOverride?.[hostKey] || "";
 
-                if (!from || to === "ORIGINAL") {
-                    showStatus("Need detected FROM and a real target.", true);
+                if (!base) {
+                    const activeTab = await getActiveTab();
+                    const resp = activeTab?.id ? await sendTabMessage(activeTab.id, { type: "DETECT" }) : null;
+                    base = resp?.detection?.currency || "";
+                }
+                if (!base) {
+                    showStatus("Base currency not detected. Set domain override first.", true);
+                    return;
+                }
+                const target = String(elTarget?.value || "EUR").trim().toUpperCase() || "EUR";
+                const rate = v > 0 ? (1 / v) : null;
+                const key = `${base}->${target}`;
+
+                if (!rate || !Number.isFinite(rate) || rate <= 0) {
+                    showStatus("Enter a valid number.", true);
                     return;
                 }
 
-                if (typeof SCCStorage.setManualRateForHost === "function") {
-                    await SCCStorage.setManualRateForHost(hostKey, from, to, v);
-                    showStatus(`Saved manual: ${hostKey} ${from}->${to}`);
-                } else {
-                    await SCCStorage.setManualRate(from, to, v);
-                    showStatus(`Saved manual (legacy): ${from}->${to}`);
-                }
 
+                await SCCStorage.setManualRatesForHost(hostKey, { [key]: rate });
+                if (elManualRate) elManualRate.value = "";
+                showStatus("Saved manual rate.");
                 await refreshUI();
             } finally {
                 setBusy(false);

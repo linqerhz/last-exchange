@@ -15,6 +15,7 @@
       "run_at": "document_idle",
       "js": [
         "globals/currencyMaps.js",
+        "lib/numberParse.js",
         "lib/storage.js",
         "lib/currencyDetect.js",
         "lib/siteRateDetect.js",

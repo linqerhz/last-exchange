@@ -54,7 +54,7 @@
             <input id="manualRate" placeholder="e.g. 0.0102" />
             <button id="saveManual">Save</button>
         </div>
-        <div class="muted" id="manualHint">Saved per host+pair: HOST + FROM->TARGET</div>
+        <div class="muted" id="manualHint">Enter: 1 TARGET = X BASE (saved per host)</div>
     </div>
 
     <div class="block">
@@ -88,6 +88,7 @@
 <div id="status" class="status" style="display:none"></div>
 
 <script src="../globals/currencyMaps.js"></script>
+<script src="../lib/numberParse.js"></script>
 <script src="../lib/storage.js"></script>
 <script src="popup.js"></script>
 </body>
