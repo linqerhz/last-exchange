@@ -558,6 +558,17 @@
             setBusy(true, "Saving manual rates…");
             try {
                 await SCCStorage.setManualRatesForHost(host, patch);
+                await SCCStorage.updateSettings((s) => {
+                    const map = (s.rateModeByHost && typeof s.rateModeByHost === "object")
+                        ? { ...s.rateModeByHost }
+                        : {};
+                    const hostEntry = (map[host] && typeof map[host] === "object") ? { ...map[host] } : {};
+                    for (const key of Object.keys(patch)) {
+                        hostEntry[key] = "MANUAL";
+                    }
+                    map[host] = hostEntry;
+                    s.rateModeByHost = map;
+                });
                 if (inUsd) inUsd.value = "";
                 if (inEur) inEur.value = "";
                 await refreshRatesUI(baseUp);
@@ -1330,6 +1341,31 @@
                     return;
                 }
 
+                if (msg?.type === "FORCE_SITE_DETECT") {
+                    const settings = await SCCStorage.getSettings();
+                    const detection = await detectCurrentWithSettings(settings);
+                    const overrideBase = settings?.domainCurrencyOverride?.[getHostKey()] || "";
+                    const base = detection?.currency || overrideBase;
+                    if (!base) {
+                        sendResponse({ ok: false, error: "Base currency not detected." });
+                        return;
+                    }
+
+                    const host = getHostKey();
+                    const selectors = settings?.customSelectorsByHost?.[host] || [];
+                    const need = [];
+                    if (base !== "USD") need.push(pairKey("USD", base), pairKey(base, "USD"));
+                    if (base !== "EUR") need.push(pairKey("EUR", base), pairKey(base, "EUR"));
+
+                    await ensureSitePairsFresh(settings, host, selectors, base, need, {
+                        forceDetect: true,
+                        reason: msg?.reason || "force-site-detect"
+                    });
+                    await refreshRatesUI(base, { reason: msg?.reason || "force-site-detect", forceDetect: true });
+                    sendResponse({ ok: true });
+                    return;
+                }
+
                 if (msg?.type === "CONVERT") {
                     const target = msg.target || "EUR";
                     const out = await convertTo(target);
@@ -1361,6 +1397,7 @@
             selectors: s?.customSelectorsByHost?.[host],
             rateSelectors: s?.rateSelectorsByHost?.[host],
             manualRates: s?.manualRatesByHost?.[host],
+            rateMode: s?.rateModeByHost?.[host],
             pinnedRates: s?.pinnedRatesByHost?.[host],
             siteRates: s?.siteRatesByHost?.[host],
             autoPrompt: s?.autoPrompt

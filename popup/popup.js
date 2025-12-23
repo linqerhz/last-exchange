@@ -37,6 +37,7 @@
     const btnRevert = document.getElementById("revert");
     const btnAddSelector = document.getElementById("addSelector");
     const btnSaveManual = document.getElementById("saveManual");
+    const btnResetManual = document.getElementById("resetManual");
 
     // Scope picker buttons (mevcut)
     const btnPickerStart = document.getElementById("pickerStart");
@@ -237,19 +238,22 @@
         }
 
         const target = String(elTarget?.value || "EUR").trim().toUpperCase() || "EUR";
+
         const manualFocused = !!(elManualRate && document.activeElement === elManualRate);
         const skipManualOverwrite = manualFocused && manualDirty;
 
         if (base && target) {
             const baseUp = String(base || "").trim().toUpperCase();
-
             const manualPairs = settings?.manualRatesByHost?.[hostKey]?.pairs || {};
+            const modePairs = settings?.rateModeByHost?.[hostKey] || {};
             const directKey = `${target}->${baseUp}`;
             const inverseKey = `${baseUp}->${target}`;
             const directEntry = manualPairs[directKey];
             const inverseEntry = manualPairs[inverseKey];
             const directRate = typeof directEntry === "object" ? directEntry.rate : directEntry;
             const inverseRate = typeof inverseEntry === "object" ? inverseEntry.rate : inverseEntry;
+            const modeDirect = modePairs?.[directKey] || null;
+            const modeInverse = modePairs?.[inverseKey] || null;
 
             let display = null;
             if (Number.isFinite(Number(directRate)) && Number(directRate) > 0) {
@@ -260,20 +264,28 @@
 
             if (display != null) {
                 if (elManualRate && !skipManualOverwrite) elManualRate.value = formatManualValue(display);
-
                 if (elManualHint) {
-                    elManualHint.textContent = `Current manual: 1 ${target} = ${formatManualValue(display)} ${baseUp}`;
-                } else {
-                    if (elManualRate && !skipManualOverwrite) elManualRate.value = "";
-
-                    if (elManualHint) {
-                        elManualHint.textContent = "Enter: 1 TARGET = X BASE (saved per host)";
+                    const isAuto = modeDirect === "AUTO" || modeInverse === "AUTO";
+                    if (isAuto) {
+                        elManualHint.textContent = `Mode: AUTO (using site detected if available). Manual saved: 1 ${target} = ${formatManualValue(display)} ${baseUp}`;
+                    } else {
+                        elManualHint.textContent = `Current manual: 1 ${target} = ${formatManualValue(display)} ${baseUp}`;
                     }
                 }
-            } else if (elManualHint) {
-                elManualHint.textContent = "Enter: 1 TARGET = X BASE (saved per host)";
+            } else {
+                if (elManualRate && !skipManualOverwrite) elManualRate.value = "";
+                if (elManualHint) {
+                    const isAuto = modeDirect === "AUTO" || modeInverse === "AUTO";
+                    elManualHint.textContent = isAuto
+                        ? "Mode: AUTO (using site detected if available)."
+                        : "Enter: 1 TARGET = X BASE (saved per host)";
+                }
             }
+        } else if (elManualHint) {
+            elManualHint.textContent = "Enter: 1 TARGET = X BASE (saved per host)";
         }
+
+
         if (!tab?.id) {
             if (elDetected) elDetected.textContent = "no tab";
             if (elRateSelHint) elRateSelHint.textContent = "Rate source: NONE (no active tab)";
@@ -451,9 +463,7 @@
                 const directKey = `${target}->${baseUp}`;
                 const inverseKey = `${baseUp}->${target}`;
 
-
                 if (!displayRate || !Number.isFinite(displayRate) || displayRate <= 0) {
-
                     showStatus("Enter a valid number.", true);
                     return;
                 }
@@ -463,11 +473,74 @@
                     [inverseKey]: 1 / displayRate
                 };
                 await SCCStorage.setManualRatesForHost(hostKey, patch);
+                await SCCStorage.updateSettings((s) => {
+                    const map = (s.rateModeByHost && typeof s.rateModeByHost === "object")
+                        ? { ...s.rateModeByHost }
+                        : {};
+                    const hostEntry = (map[hostKey] && typeof map[hostKey] === "object") ? { ...map[hostKey] } : {};
+                    hostEntry[directKey] = "MANUAL";
+                    hostEntry[inverseKey] = "MANUAL";
+                    map[hostKey] = hostEntry;
+                    s.rateModeByHost = map;
+                });
                 manualDirty = false;
-                if (elManualRate) elManualRate.value = formatManualValue(displayRate)
-
-
+                if (elManualRate) elManualRate.value = formatManualValue(displayRate);
                 showStatus("Saved manual rate.");
+                await refreshUI();
+            } finally {
+                setBusy(false);
+            }
+        };
+    }
+
+    if (btnResetManual) {
+        btnResetManual.onclick = async () => {
+            const target = String(elTarget?.value || "EUR").trim().toUpperCase() || "EUR";
+            if (target === "ORIGINAL") {
+                showStatus("Select a target currency first.", true);
+                return;
+            }
+
+            setBusy(true);
+            try {
+                const settings = await SCCStorage.getSettings();
+                let base = settings?.domainCurrencyOverride?.[hostKey] || "";
+
+                if (!base) {
+                    const activeTab = await getActiveTab();
+                    const resp = activeTab?.id ? await sendTabMessage(activeTab.id, { type: "DETECT" }) : null;
+                    base = resp?.detection?.currency || "";
+                }
+                if (!base) {
+                    showStatus("Base not detected; set domain override first.", true);
+                    return;
+                }
+
+                const baseUp = String(base || "").trim().toUpperCase();
+                const directKey = `${baseUp}->${target}`;
+                const inverseKey = `${target}->${baseUp}`;
+
+                await SCCStorage.updateSettings((s) => {
+                    const map = (s.rateModeByHost && typeof s.rateModeByHost === "object")
+                        ? { ...s.rateModeByHost }
+                        : {};
+                    const hostEntry = (map[hostKey] && typeof map[hostKey] === "object") ? { ...map[hostKey] } : {};
+                    hostEntry[directKey] = "AUTO";
+                    hostEntry[inverseKey] = "AUTO";
+                    map[hostKey] = hostEntry;
+                    s.rateModeByHost = map;
+                });
+
+                const activeTab = await getActiveTab();
+                if (activeTab?.id) {
+                    await sendTabMessage(activeTab.id, { type: "FORCE_SITE_DETECT", reason: "use_auto_rate" });
+                }
+
+                manualDirty = false;
+                if (elManualHint) {
+                    elManualHint.textContent = "Mode: AUTO (using site detected if available).";
+                }
+                showStatus("Using auto rate.");
                 await refreshUI();
             } finally {
                 setBusy(false);
@@ -600,16 +673,16 @@
     }
 
     await refreshUI();
-        if (elManualRate) {
-            elManualRate.addEventListener("input", () => {
-                manualDirty = true;
-            });
-        }
+
+    if (elManualRate) {
+        elManualRate.addEventListener("input", () => {
+            manualDirty = true;
+        });
+    }
 
     chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== "local") return;
         if (!changes.settings) return;
-        refreshUI();
         if (refreshTimer) clearTimeout(refreshTimer);
         refreshTimer = setTimeout(() => {
             refreshTimer = null;
