@@ -62,12 +62,16 @@
     const elStatus = document.getElementById("status");
 
     let manualDirty = false;
+    let rateSelUsdDirty = false;
+    let rateSelEurDirty = false;
     let refreshTimer = null;
 
     const SITE_MIN_CONF = 0.70;
     const SITE_MIN_SAMPLES = 3;
     const SITE_MAX_DISP = 0.03;
 
+    const POPUP_DEBUG = !!globalThis.SCC_DEBUG;
+    function dbg(...a) { if (POPUP_DEBUG) console.log("[SCC][popup]", ...a); }
 
     function showStatus(msg, isWarn = false) {
         if (!elStatus) return;
@@ -224,8 +228,10 @@
         // rate selectors inputs doldur (popup.html'e ekliyse)
         if (elRateSelUsd || elRateSelEur) {
             const rs = await getRateSelectorsForHost(hostKey);
-            if (elRateSelUsd) elRateSelUsd.value = rs?.USD || "";
-            if (elRateSelEur) elRateSelEur.value = rs?.EUR || "";
+            const usdFocused = !!(elRateSelUsd && document.activeElement === elRateSelUsd);
+            const eurFocused = !!(elRateSelEur && document.activeElement === elRateSelEur);
+            if (elRateSelUsd && !(usdFocused && rateSelUsdDirty)) elRateSelUsd.value = rs?.USD || "";
+            if (elRateSelEur && !(eurFocused && rateSelEurDirty)) elRateSelEur.value = rs?.EUR || "";
         }
 
         let base = settings?.domainCurrencyOverride?.[hostKey] || "";
@@ -425,6 +431,11 @@
             setBusy(true);
             try {
                 await SCCStorage.addCustomSelector(hostKey, s);
+                dbg("custom selector saved", { hostKey, selector: s });
+                const activeTab = await getActiveTab();
+                if (activeTab?.id) {
+                    await sendTabMessage(activeTab.id, { type: "FORCE_SITE_DETECT", reason: "custom-selector-save" });
+                }
                 if (elSelector) elSelector.value = "";
                 await refreshUI();
                 showStatus("Selector saved.");
@@ -519,7 +530,6 @@
                 const baseUp = String(base || "").trim().toUpperCase();
                 const directKey = `${baseUp}->${target}`;
                 const inverseKey = `${target}->${baseUp}`;
-
                 await SCCStorage.updateSettings((s) => {
                     const map = (s.rateModeByHost && typeof s.rateModeByHost === "object")
                         ? { ...s.rateModeByHost }
@@ -560,6 +570,13 @@
             try {
                 await setRateSelectorForHost(hostKey, "USD", usdSel || null);
                 await setRateSelectorForHost(hostKey, "EUR", eurSel || null);
+                dbg("rate selectors saved", { hostKey, usdSel, eurSel });
+                const activeTab = await getActiveTab();
+                if (activeTab?.id) {
+                    await sendTabMessage(activeTab.id, { type: "FORCE_SITE_DETECT", reason: "rate-selector-save" });
+                }
+                rateSelUsdDirty = false;
+                rateSelEurDirty = false;
                 await refreshUI();
                 showStatus("Rate widget selectors saved.");
             } catch (e) {
@@ -679,6 +696,18 @@
             manualDirty = true;
         });
     }
+
+    if (elRateSelUsd) {
+        elRateSelUsd.addEventListener("input", () => {
+            rateSelUsdDirty = true;
+        });
+    }
+    if (elRateSelEur) {
+        elRateSelEur.addEventListener("input", () => {
+            rateSelEurDirty = true;
+        });
+    }
+
 
     chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== "local") return;

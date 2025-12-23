@@ -344,7 +344,8 @@
             baseCode: baseCode || null,
             requiredPairsCount: Array.isArray(requiredPairs) ? requiredPairs.length : 0,
             selectorsCount: Array.isArray(selectors) ? selectors.length : 0,
-            rateSelectors: rs ? Object.keys(rs) : [], // ✅ kanıt
+            rateSelectors: rs ? Object.keys(rs) : [],
+            rateSelectorsEntry: rs || null,
             forceDetect,
             reason
         });
@@ -549,7 +550,6 @@
                 patch[`EUR->${baseUp}`] = eurVal;
                 patch[`${baseUp}->EUR`] = 1 / eurVal;
             }
-
             if (!Object.keys(patch).length) {
                 setStatus("Nothing to save (enter a valid number).", true);
                 return;
@@ -953,6 +953,7 @@
 
     let PICKER_ACTIVE = false;
     let PICKER_LAST_HL = null;
+    let PICKER_SAVING = false;
 
     function cssEscapeSafe(s) {
         try { return CSS.escape(s); } catch { return String(s).replace(/["\\]/g, "\\$&"); }
@@ -1088,8 +1089,8 @@
 
         if (el.id) return `#${cssEscapeSafe(el.id)}`;
 
-        const dti = el.getAttribute("data-test-id");
-        if (dti) return `[data-test-id="${cssEscapeSafe(dti)}"]`;
+        const dti2 = el.getAttribute("data-testid");
+        if (dti2) return `[data-testid="${cssEscapeSafe(dti2)}"]`;
 
         const tag = el.tagName.toLowerCase();
         const classes = Array.from(el.classList || [])
@@ -1127,19 +1128,24 @@
         }
     }
 
-    function onPickerClick(e) {
+    function onPickerClickBlocker(e) {
+        if (!(PICKER_ACTIVE || RATE_PICKER_ACTIVE)) return;
+        if (inOurUiEvent(e)) return;
+        stopEvent(e);
+    }
+    function onPickerPointerDown(e) {
         if (!PICKER_ACTIVE) return;
         if (inOurUiEvent(e)) return;
-
-        e.preventDefault();
-        e.stopPropagation();
-
-        const target = e.target;
+        stopEvent(e);
+        if (PICKER_SAVING) return;
+        const target = getEventTarget(e);
         if (!(target instanceof Element)) return;
 
         const scope = pickBestScope(target);
         const sel = selectorForElement(scope);
+        const sample = (scope?.innerText || scope?.textContent || "").replace(/\u00A0/g, " ").trim().slice(0, 220);
 
+        dbg("[picker] element picked", { host: getHostKey(), sel, sample });
         if (!sel) {
             setPickerMsg("Selector üretilemedi.");
             return;
@@ -1148,12 +1154,21 @@
         setPickerMsg(`Kaydediliyor: ${sel}`);
 
         (async () => {
+            PICKER_SAVING = true;
             try {
                 await saveScopeSelector(sel);
+                const settings = await SCCStorage.getSettings();
+                const saved = settings?.customSelectorsByHost?.[getHostKey()] || [];
+                dbg("[picker] storage write done", { host: getHostKey(), count: saved.length });
+                dbg("[picker] saved selector", { host: getHostKey(), sel });
+                showToast("Selector saved");
+                await forceDetectAndRefresh("picker-save");
                 setPickerMsg(`Saved scope: ${sel}`);
                 setTimeout(() => stopPickerMode(), 600);
             } catch (err) {
                 setPickerMsg(`Save failed: ${String(err?.message || err)}`);
+            } finally {
+                PICKER_SAVING = false;
             }
         })();
     }
@@ -1174,7 +1189,8 @@
         setPickerMsg("Picker: fiyat alanına tıkla (ESC = çıkış)");
 
         document.addEventListener("mousemove", onPickerMove, true);
-        document.addEventListener("click", onPickerClick, true);
+        document.addEventListener("pointerdown", onPickerPointerDown, true);
+        document.addEventListener("click", onPickerClickBlocker, true);
         document.addEventListener("keydown", onPickerKey, true);
     }
 
@@ -1183,7 +1199,8 @@
         PICKER_ACTIVE = false;
 
         document.removeEventListener("mousemove", onPickerMove, true);
-        document.removeEventListener("click", onPickerClick, true);
+        document.removeEventListener("pointerdown", onPickerPointerDown, true);
+        document.removeEventListener("click", onPickerClickBlocker, true);
         document.removeEventListener("keydown", onPickerKey, true);
 
         removeHighlight();
@@ -1197,7 +1214,44 @@
 
     let RATE_PICKER_ACTIVE = false;
     let RATE_PICKER_QUOTE = null;
+    let RATE_PICKER_SAVING = false;
 
+    const TOAST_ID = "scc-toast-host";
+
+    function showToast(text) {
+        try {
+            document.getElementById(TOAST_ID)?.remove();
+            const el = document.createElement("div");
+            el.id = TOAST_ID;
+            el.textContent = text;
+            el.style.position = "fixed";
+            el.style.left = "50%";
+            el.style.top = "16px";
+            el.style.transform = "translateX(-50%)";
+            el.style.zIndex = "2147483647";
+            el.style.background = "rgba(0,0,0,0.85)";
+            el.style.color = "#fff";
+            el.style.padding = "8px 12px";
+            el.style.borderRadius = "10px";
+            el.style.fontSize = "12px";
+            el.style.fontFamily = "system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif";
+            el.style.boxShadow = "0 2px 10px rgba(0,0,0,0.35)";
+            document.documentElement.appendChild(el);
+            setTimeout(() => el.remove(), 2000);
+        } catch { }
+    }
+
+    function stopEvent(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
+    }
+
+    function getEventTarget(e) {
+        const path = typeof e.composedPath === "function" ? e.composedPath() : [];
+        const fromPath = path.find(n => n instanceof Element);
+        return fromPath || e.target;
+    }
     function textLooksRateyLocal(t, quote) {
         const s = String(t || "");
         if (!/\d/.test(s)) return false;
@@ -1236,6 +1290,33 @@
         if (!baseSel) return null;
         return makeUniqueSelector(baseSel, el);
     }
+    async function forceDetectAndRefresh(reason) {
+        try {
+            const settings = await SCCStorage.getSettings();
+            const detection = await detectCurrentWithSettings(settings);
+            const overrideBase = settings?.domainCurrencyOverride?.[getHostKey()] || "";
+            const base = detection?.currency || overrideBase;
+            if (!base) {
+                dbg("[forceDetect] no base", { host: getHostKey(), reason });
+                return;
+            }
+
+            const host = getHostKey();
+            const selectors = settings?.customSelectorsByHost?.[host] || [];
+            const need = [];
+            if (base !== "USD") need.push(pairKey("USD", base), pairKey(base, "USD"));
+            if (base !== "EUR") need.push(pairKey("EUR", base), pairKey(base, "EUR"));
+
+            dbg("[forceDetect] start", { host, base, reason, selectorsCount: selectors.length });
+            await ensureSitePairsFresh(settings, host, selectors, base, need, {
+                forceDetect: true,
+                reason
+            });
+            await refreshRatesUI(base, { reason, forceDetect: true });
+        } catch (e) {
+            dbg("[forceDetect] error", String(e?.message || e));
+        }
+    }
 
     async function startRatePickerMode(quoteCode) {
         // aynı anda scope picker açık olmasın
@@ -1250,7 +1331,8 @@
         setPickerMsg(`Rate Picker: ${RATE_PICKER_QUOTE} satırına tıkla (ESC = çıkış)`);
 
         document.addEventListener("mousemove", onPickerMove, true);
-        document.addEventListener("click", onRatePickerClick, true);
+        document.addEventListener("pointerdown", onRatePickerPointerDown, true);
+        document.addEventListener("click", onPickerClickBlocker, true);
         document.addEventListener("keydown", onPickerKey, true);
     }
 
@@ -1260,21 +1342,21 @@
         RATE_PICKER_QUOTE = null;
 
         document.removeEventListener("mousemove", onPickerMove, true);
-        document.removeEventListener("click", onRatePickerClick, true);
+        document.removeEventListener("pointerdown", onRatePickerPointerDown, true);
+        document.removeEventListener("click", onPickerClickBlocker, true);
         document.removeEventListener("keydown", onPickerKey, true);
 
         removeHighlight();
         document.getElementById(PICKER_HOST_ID)?.remove();
     }
 
-    function onRatePickerClick(e) {
+    function onRatePickerPointerDown(e) {
         if (!RATE_PICKER_ACTIVE) return;
         if (inOurUiEvent(e)) return;
+        stopEvent(e);
+        if (RATE_PICKER_SAVING) return;
 
-        e.preventDefault();
-        e.stopPropagation();
-
-        const target = e.target;
+        const target = getEventTarget(e);
         if (!(target instanceof Element)) return;
 
         const quote = RATE_PICKER_QUOTE;
@@ -1282,7 +1364,7 @@
         const sel = selectorForRateElement(container);
 
         const sample = (container.innerText || container.textContent || "").replace(/\u00A0/g, " ").trim().slice(0, 220);
-        dbg("[ratePick]", { quote, host: getHostKey(), sel, sample });
+        dbg("[ratePick] element picked", { quote, host: getHostKey(), sel, sample });
 
         if (!sel) {
             setPickerMsg("Rate selector üretilemedi.");
@@ -1292,13 +1374,22 @@
         setPickerMsg(`Kaydediliyor (${quote}): ${sel}`);
 
         (async () => {
+            RATE_PICKER_SAVING = true;
             try {
                 const host = getHostKey();
                 await SCCStorage.setRateSelector(host, quote, sel);
+                const settings = await SCCStorage.getSettings();
+                const entry = settings?.rateSelectorsByHost?.[host] || {};
+                dbg("[ratePick] storage write done", { host, quote, entry });
+                dbg("[ratePick] saved selector", { host, quote, sel });
+                showToast("Selector saved");
+                await forceDetectAndRefresh("rate-picker-save");
                 setPickerMsg(`Saved ${quote} selector: ${sel}`);
                 setTimeout(() => stopRatePickerMode(), 700);
             } catch (err) {
                 setPickerMsg(`Save failed: ${String(err?.message || err)}`);
+            } finally {
+                RATE_PICKER_SAVING = false;
             }
         })();
     }
@@ -1311,6 +1402,8 @@
         (async () => {
             try {
                 if (msg?.type === "START_PICKER") {
+                    dbg("[picker] START_PICKER", { host: getHostKey(), mode: "scope" });
+
                     startPickerMode();
                     sendResponse({ ok: true });
                     return;
@@ -1324,6 +1417,7 @@
 
                 if (msg?.type === "START_RATE_PICKER") {
                     const quote = msg.quoteCode || "USD";
+                    dbg("[picker] START_RATE_PICKER", { host: getHostKey(), mode: "rate", quote });
                     await startRatePickerMode(quote);
                     sendResponse({ ok: true });
                     return;
@@ -1351,41 +1445,40 @@
                         return;
                     }
 
-                    const host = getHostKey();
-                    const selectors = settings?.customSelectorsByHost?.[host] || [];
-                    const need = [];
-                    if (base !== "USD") need.push(pairKey("USD", base), pairKey(base, "USD"));
-                    if (base !== "EUR") need.push(pairKey("EUR", base), pairKey(base, "EUR"));
+                        const host = getHostKey();
+                        const selectors = settings?.customSelectorsByHost?.[host] || [];
+                        const need = [];
+                        if (base !== "USD") need.push(pairKey("USD", base), pairKey(base, "USD"));
+                        if (base !== "EUR") need.push(pairKey("EUR", base), pairKey(base, "EUR"));
 
-                    await ensureSitePairsFresh(settings, host, selectors, base, need, {
-                        forceDetect: true,
-                        reason: msg?.reason || "force-site-detect"
-                    });
-                    await refreshRatesUI(base, { reason: msg?.reason || "force-site-detect", forceDetect: true });
-                    sendResponse({ ok: true });
-                    return;
+                        await ensureSitePairsFresh(settings, host, selectors, base, need, {
+                            forceDetect: true,
+                            reason: msg?.reason || "force-site-detect"
+                        });
+                        await refreshRatesUI(base, { reason: msg?.reason || "force-site-detect", forceDetect: true });
+                        sendResponse({ ok: true });
+                        return;
+                    }
+                    if (msg?.type === "CONVERT") {
+                        const target = msg.target || "EUR";
+                        const out = await convertTo(target);
+                        sendResponse(out);
+                        return;
+                    }
+
+                    if (msg?.type === "REVERT") {
+                        const r = SCCConvert.revert();
+                        sendResponse({ ok: true, reverted: r?.count || 0 });
+                        return;
+                    }
+
+                    sendResponse({ ok: false, error: "Unknown message" });
+                } catch (e) {
+                    sendResponse({ ok: false, error: String(e?.message || e) });
                 }
-
-                if (msg?.type === "CONVERT") {
-                    const target = msg.target || "EUR";
-                    const out = await convertTo(target);
-                    sendResponse(out);
-                    return;
-                }
-
-                if (msg?.type === "REVERT") {
-                    const r = SCCConvert.revert();
-                    sendResponse({ ok: true, reverted: r?.count || 0 });
-                    return;
-                }
-
-                sendResponse({ ok: false, error: "Unknown message" });
-            } catch (e) {
-                sendResponse({ ok: false, error: String(e?.message || e) });
-            }
-        })();
-        return true;
-    });
+            })();
+            return true;
+        });
 
     // init
     maybeShowPrompt();
