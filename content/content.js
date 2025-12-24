@@ -322,7 +322,36 @@
         }
         return Object.keys(out).length ? out : null;
     }
+    function pairMetaComparable(v) {
+        if (!v || typeof v !== "object") return null;
+        return {
+            rate: v.rate,
+            confidence: v.confidence,
+            evidence: v.evidence,
+            nSamples: v.nSamples,
+            dispersion: v.dispersion,
+            ambiguous: v.ambiguous
+        };
+    }
 
+    function arePairsEquivalent(a, b) {
+        if (!a || !b) return false;
+        const aKeys = Object.keys(a);
+        const bKeys = Object.keys(b);
+        if (aKeys.length !== bKeys.length) return false;
+        for (const k of aKeys) {
+            const av = pairMetaComparable(a[k]);
+            const bv = pairMetaComparable(b[k]);
+            if (!av || !bv) return false;
+            if (av.rate !== bv.rate) return false;
+            if (av.confidence !== bv.confidence) return false;
+            if (av.evidence !== bv.evidence) return false;
+            if (av.nSamples !== bv.nSamples) return false;
+            if (av.dispersion !== bv.dispersion) return false;
+            if (av.ambiguous !== bv.ambiguous) return false;
+        }
+        return true;
+    }
     function cacheHasRequiredPairs(cachedPairs, requiredPairs) {
         if (!cachedPairs || typeof cachedPairs !== "object") return false;
         if (!Array.isArray(requiredPairs) || !requiredPairs.length) return true;
@@ -403,6 +432,13 @@
                 keyCount: detectedPairs ? Object.keys(detectedPairs).length : 0,
                 keys: detectedPairs ? Object.keys(detectedPairs).slice(0, 10) : null
             });
+            if (rs && !detectedPairs) {
+                dbg("ensureSitePairsFresh:rate_selectors_no_pairs", {
+                    host,
+                    baseCode: baseCode || null,
+                    rateSelectors: rs || null
+                });
+            }
         } catch (e) {
             dbg("ensureSitePairsFresh:detect_error", String(e?.message || e));
             detectedPairs = null;
@@ -419,8 +455,12 @@
         // ✅ cache yaz: sadece “en az 1 valid pair” varsa (normalize buna garanti verir)
         try {
             if (merged && typeof merged === "object" && Object.keys(merged).length) {
-                await SCCStorage.setSitePairsForHost(host, merged);
-                dbg("ensureSitePairsFresh:cache_write_ok", { keyCount: Object.keys(merged).length });
+                if (cachedPairs && arePairsEquivalent(cachedPairs, merged)) {
+                    dbg("ensureSitePairsFresh:cache_write_skip_same", { keyCount: Object.keys(merged).length });
+                } else {
+                    await SCCStorage.setSitePairsForHost(host, merged);
+                    dbg("ensureSitePairsFresh:cache_write_ok", { keyCount: Object.keys(merged).length });
+                }
             } else {
                 dbg("ensureSitePairsFresh:cache_write_skip");
             }
@@ -1092,9 +1132,13 @@
         const dti2 = el.getAttribute("data-testid");
         if (dti2) return `[data-testid="${cssEscapeSafe(dti2)}"]`;
 
+        const dti = el.getAttribute("data-test-id");
+        if (dti) return `[data-test-id="${cssEscapeSafe(dti)}"]`;
+
         const tag = el.tagName.toLowerCase();
         const classes = Array.from(el.classList || [])
             .filter(c => c && c.length >= 3 && c.length <= 40)
+            .filter(c => c !== "scc-hl")
             .filter(c => !/\d{3,}/.test(c))
             .filter(c => !/^(css-|sc-|jss-|chakra-|Mui)/i.test(c))
             .slice(0, 3);
@@ -1103,6 +1147,13 @@
         return tag;
     }
 
+    function sanitizeSelector(sel) {
+        if (!sel) return sel;
+        return String(sel)
+            .replace(/\.scc-hl\b/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+    }
     async function saveScopeSelector(sel) {
         const host = getHostKey();
         if (!host) return false;
@@ -1140,9 +1191,8 @@
         if (PICKER_SAVING) return;
         const target = getEventTarget(e);
         if (!(target instanceof Element)) return;
-
         const scope = pickBestScope(target);
-        const sel = selectorForElement(scope);
+        const sel = sanitizeSelector(selectorForElement(scope));
         const sample = (scope?.innerText || scope?.textContent || "").replace(/\u00A0/g, " ").trim().slice(0, 220);
 
         dbg("[picker] element picked", { host: getHostKey(), sel, sample });
@@ -1361,7 +1411,7 @@
 
         const quote = RATE_PICKER_QUOTE;
         const container = pickRateContainer(target, quote);
-        const sel = selectorForRateElement(container);
+        const sel = sanitizeSelector(selectorForRateElement(container));
 
         const sample = (container.innerText || container.textContent || "").replace(/\u00A0/g, " ").trim().slice(0, 220);
         dbg("[ratePick] element picked", { quote, host: getHostKey(), sel, sample });
